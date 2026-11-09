@@ -24,7 +24,7 @@ Gate records live in `~/.local/state/ne` (or `$NE_STATE`), outside every reposit
 Install:
 
 ```
-claude plugin marketplace add <this repo>
+claude plugin marketplace add nullentropy/claude-plugins
 claude plugin install ne@nullentropy
 ```
 
