@@ -1,0 +1,6 @@
+{
+  "name": "ne",
+  "version": "0.1.0",
+  "description": "Discovery before building a story, a fresh review before any PR, and the voice for everything written. Hooks enforce the first two.",
+  "author": { "name": "nullentropy" }
+}

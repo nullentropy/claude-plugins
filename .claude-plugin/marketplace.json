@@ -1,0 +1,14 @@
+{
+  "name": "nullentropy",
+  "owner": {
+    "name": "nullentropy"
+  },
+  "plugins": [
+    {
+      "name": "ne",
+      "source": "./plugins/ne",
+      "description": "Discovery before building, a fresh review before any PR, long work kept in a shared record, and a plain voice for everything written."
+    }
+  ],
+  "description": "Claude Code plugins by nullentropy."
+}
