@@ -18,7 +18,7 @@ inside the code repository.
 | `RESUME.md` | Status, head, progress in percentages, next steps in order | Every checkpoint |
 | `ledger.tsv` | One row per unit event: dispatched, reported, landed, held | Every outcome |
 | `decisions.tsv` | Each decision, why, and the evidence | When one is made |
-| `water.tsv` | The user's weekly-limit readings | When the user gives one |
+| `water.tsv` | Weekly-limit readings, the user's and the status line's | When the user gives one, or a water report records one |
 | `briefs/`, `reports/` | One brief per unit, one report per unit | Per unit |
 
 ## Start a track
