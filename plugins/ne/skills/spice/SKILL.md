@@ -30,7 +30,7 @@ The script takes the first of these the repository has, and says which:
 2. A successful GitHub deployment to an environment named `production` or
    `prod`.
 3. A branch on origin named `production`, `prod`, `release` or `live`.
-4. A tag.
+4. A release tag, named like `v1.2` or `1.2`.
 5. Merge to the default branch.
 
 If the line it detects is wrong for the repository, ask the user where
@@ -42,7 +42,9 @@ GitHub steps are skipped.
 Only units in a ledger count. Work done outside a track does not. The script
 takes each unit's latest row with a head commit and finds where that work
 landed: the same commit, the merge commit of a pull request from the unit's
-branch, or commits with the same patches (a cherry-pick or a squash). The unit
+branch, or commits with the same patches. Patches count only when all of the
+unit's commits arrived, or all of them squashed into one, so a unit built on
+another unit's branch does not count when only the other one ships. The unit
 is harvested when that commit first crossed the line, and it is counted when
 that time is inside the window.
 
@@ -54,5 +56,7 @@ only through its own commit or its pull request.
 
 Yield is the units harvested per percent of the weekly limit spent in the same
 window. The script reads the rise from the `water.tsv` readings in the window
-of every track it reports. With fewer than two readings in the window there is
+of every track it reports. A reading lower than the one before means the limit
+reset, and the lower reading counts as spent from zero. With fewer than two
+readings in the window there is
 no figure. Ask for a reading through ne:water rather than guessing one.

@@ -12,11 +12,12 @@ The line is the first of these that the repository has:
       deploy:<environment>, branch:<name>, tag:<glob>, or merge
   a successful GitHub deployment to an environment named production or prod
   a remote branch named production, prod, release or live
-  a tag
+  a release tag, named like v1.2 or 1.2
   merge to the default branch
 
 A unit's work may reach the line as the same commit, as a pull request's
-merge or squash commit, or cherry-picked; all three count.
+merge or squash commit, or cherry-picked; all three count. Patches count only
+when every one of the unit's commits arrived, or their sum as one squash.
 """
 
 import csv
@@ -35,6 +36,7 @@ PROD_BRANCHES = ("production", "prod", "release", "live")
 # A unit with more commits than this past the branch was cut from somewhere else,
 # and matching its patches would diff that branch's whole history.
 MAX_UNIT_COMMITS = 50
+RELEASE_TAGS = "release"
 
 
 def git(*args, ok=False):
@@ -138,7 +140,7 @@ class Line:
         return {
             "deploy": f"a successful GitHub deployment to {self.arg}",
             "branch": f"the branch {self.arg}",
-            "tag": f"a tag matching {self.arg}",
+            "tag": "a release tag, named like v1.2 or 1.2" if self.arg == RELEASE_TAGS else f"a tag matching {self.arg}",
             "merge": f"merge to {self.arg}",
         }[self.kind] + f" ({self.why})"
 
@@ -158,17 +160,36 @@ def gh_repo():
     return out.strip() if out else None
 
 
+_deployments = {}
+
+
 def deployments(repo, env):
-    out = gh("api", "--paginate", f"repos/{repo}/deployments?environment={env}&per_page=100")
-    if out is None:
-        return []
-    items = []
-    for chunk in re.split(r"(?<=\])\s*(?=\[)", out.strip()):
-        try:
-            items.extend(json.loads(chunk))
-        except ValueError:
-            pass
-    return sorted(((parse_ts(d["created_at"]), d["sha"], d["id"]) for d in items), key=lambda x: x[0])
+    if (repo, env) not in _deployments:
+        out = gh("api", "--paginate", f"repos/{repo}/deployments?environment={env}&per_page=100") or ""
+        items = []
+        for chunk in re.split(r"(?<=\])\s*(?=\[)", out.strip()):
+            try:
+                items.extend(json.loads(chunk))
+            except ValueError:
+                pass
+        _deployments[(repo, env)] = sorted(((parse_ts(d["created_at"]), d["sha"], d["id"]) for d in items), key=lambda x: x[0])
+    return _deployments[(repo, env)]
+
+
+_statuses = {}
+
+
+def deploy_succeeded(repo, dep_id):
+    if dep_id not in _statuses:
+        out = gh("api", f"repos/{repo}/deployments/{dep_id}/statuses", "-q", "[.[].state]")
+        _statuses[dep_id] = bool(out) and "success" in out
+    return _statuses[dep_id]
+
+
+def tag_matches(name, glob):
+    if glob == RELEASE_TAGS:
+        return re.match(r"^v?\d+\.\d+", name) is not None
+    return fnmatch.fnmatch(name, glob)
 
 
 def detect(tracks_read):
@@ -189,18 +210,19 @@ def detect(tracks_read):
         line = None
         repo = gh_repo()
         if repo:
-            envs = gh("api", f"repos/{repo}/environments", "-q", ".environments[].name") or ""
+            envs = gh("api", "--paginate", f"repos/{repo}/environments?per_page=100", "-q", ".environments[].name") or ""
             for env in envs.split():
-                if env.lower() in PROD_ENVS and deployments(repo, env):
-                    line = Line("deploy", env, "found GitHub deployments")
+                recent = deployments(repo, env)[-10:] if env.lower() in PROD_ENVS else []
+                if any(deploy_succeeded(repo, dep_id) for _, _, dep_id in reversed(recent)):
+                    line = Line("deploy", env, "found successful GitHub deployments")
                     break
         if not line:
             for b in PROD_BRANCHES:
                 if resolve(f"origin/{b}"):
                     line = Line("branch", b, "found the branch on origin")
                     break
-        if not line and git("tag", "--list", ok=True):
-            line = Line("tag", "*", "found tags")
+        if not line and any(tag_matches(t, RELEASE_TAGS) for t in (git("tag", "--list", ok=True) or "").split()):
+            line = Line("tag", RELEASE_TAGS, "found release tags")
         if not line:
             line = Line("merge", default_branch(), "nothing else found")
     prepare(line)
@@ -216,7 +238,7 @@ def prepare(line):
         tags = []
         for row in (git("for-each-ref", "--sort=creatordate", "--format=%(refname:short)\t%(creatordate:iso-strict)", "refs/tags/") or "").splitlines():
             name, _, when = row.partition("\t")
-            if fnmatch.fnmatch(name, line.arg):
+            if tag_matches(name, line.arg):
                 tags.append((parse_ts(when), name))
         line.tags = tags
     elif line.kind == "deploy":
@@ -225,14 +247,6 @@ def prepare(line):
             raise SystemExit("The harvest line is a GitHub deployment, but gh cannot see this repository.")
         line.repo = repo
         line.deploys = deployments(repo, line.arg)
-        line.status = {}
-
-
-def deploy_succeeded(line, dep_id):
-    if dep_id not in line.status:
-        out = gh("api", f"repos/{line.repo}/deployments/{dep_id}/statuses", "-q", "[.[].state]")
-        line.status[dep_id] = bool(out) and "success" in out
-    return line.status[dep_id]
 
 
 def crossed(line, commit):
@@ -241,13 +255,16 @@ def crossed(line, commit):
         if not is_ancestor(commit, line.ref):
             return None
         path = git("rev-list", "--first-parent", "--ancestry-path", "--reverse", f"{commit}..{line.ref}").split()
-        return commit_time(path[0] if path else commit)
+        # rev-list leaves commit itself out, so when commit is on the first-parent chain, path[0] is the commit after it.
+        if not path or git("rev-parse", f"{path[0]}^1", ok=True) == commit:
+            return commit_time(commit)
+        return commit_time(path[0])
     if line.kind == "tag":
         containing = set((git("tag", "--contains", commit, ok=True) or "").split())
         return next((t for t, name in line.tags if name in containing), None)
     made = commit_time(commit)
     for t, sha, dep_id in line.deploys:
-        if t >= made and is_ancestor(commit, sha) and deploy_succeeded(line, dep_id):
+        if t >= made and is_ancestor(commit, sha) and deploy_succeeded(line.repo, dep_id):
             return t
     return None
 
@@ -268,9 +285,11 @@ def landed(head, branch, targets):
         mine = {row[0] for row in pid_of(git("log", "-p", "--no-merges", f"{mb}..{head}", ok=True))}
         whole = pid_of(git("diff", mb, head, ok=True))
         whole = whole[0][0] if whole else None
-        hits = [(t, sha) for t, sha, pid in target.commits(made) if pid == whole or pid in mine]
-        if hits:
-            yield max(hits)[1]
+        found = {pid: (t, sha) for t, sha, pid in target.commits(made) if pid == whole or pid in mine}
+        if whole in found:
+            yield found[whole][1]
+        elif mine and mine <= found.keys():
+            yield max(found[p] for p in mine)[1]
 
 
 _merged = None
@@ -295,19 +314,21 @@ def pid_of(text):
 
 
 class Target:
-    """A branch's commits with their patch ids, read once from the earliest time any unit asks for."""
+    """A branch's commits with their patch ids, read on first use from the earliest time any unit could need."""
 
-    def __init__(self, ref, since):
-        self.ref = ref
-        when = f"--since={since.isoformat()}"
-        times = {}
-        for row in (git("log", "--no-merges", "--format=%H %cI", when, ref, ok=True) or "").splitlines():
-            sha, t = row.split()
-            times[sha] = parse_ts(t)
-        log = git("log", "-p", "--no-merges", when, ref, ok=True)
-        self.all = [(times[sha], sha, pid) for pid, sha in pid_of(log) if sha in times]
+    def __init__(self, ref, since, first_parent=False):
+        self.ref, self.since, self.first_parent = ref, since, first_parent
+        self.all = None
 
     def commits(self, since):
+        if self.all is None:
+            args = ["--no-merges", f"--since={self.since.isoformat()}"] + (["--first-parent"] if self.first_parent else [])
+            times = {}
+            for row in (git("log", *args, "--format=%H %cI", self.ref, ok=True) or "").splitlines():
+                sha, t = row.split()
+                times[sha] = parse_ts(t)
+            log = git("log", "-p", *args, self.ref, ok=True)
+            self.all = [(times[sha], sha, pid) for pid, sha in pid_of(log) if sha in times]
         return [c for c in self.all if c[0] >= since]
 
 
@@ -327,8 +348,9 @@ def harvest_time(line, targets, r):
 
 
 def rise(rows, start):
-    rows = sorted(r for r in rows if r[0] >= start)
-    return sum(max(0.0, b - a) for (_, a), (_, b) in zip(rows, rows[1:])), len(rows)
+    """Percent spent across the readings; a fall means the weekly limit reset, so everything after it was spent from zero."""
+    rows = sorted((r for r in rows if r[0] >= start), key=lambda r: r[0])
+    return sum(b - a if b >= a else b for (_, a), (_, b) in zip(rows, rows[1:])), len(rows)
 
 
 def report(only, days):
@@ -346,8 +368,11 @@ def report(only, days):
     made = [commit_time(h) for h in heads if h]
     targets = []
     if made:
-        refs = [resolve(f"origin/{default_branch()}") or resolve(default_branch()), line.ref]
-        targets = [Target(ref, min(made)) for ref in dict.fromkeys(filter(None, refs))]
+        base = resolve(f"origin/{default_branch()}") or resolve(default_branch())
+        targets = [Target(base, min(made))]
+        if line.ref and line.ref != base:
+            # Its merges from the default branch are already read through base; only commits made on it directly are new.
+            targets.append(Target(line.ref, min(made), first_parent=True))
     total, waiting, missing, water = 0, 0, 0, []
     for name, read in tr.items():
         got = []
@@ -368,8 +393,10 @@ def report(only, days):
     print(f"\nHarvested: {total} unit(s). Not past the line yet: {waiting}.", end="")
     print(f" Heads missing from this clone: {missing}." if missing else "")
     used, n = rise(water, start)
-    if n < 2 or used <= 0:
+    if n < 2:
         print("Yield: no figure. It needs two weekly-limit readings in the window (ne:water).")
+    elif used <= 0:
+        print(f"Yield: no figure. The {n} readings in the window show no water spent.")
     else:
         print(f"Water spent in the window: {used:g}% of the weekly limit, from {n} readings.")
         print(f"Yield: {total / used:.2f} unit(s) per percent.")
