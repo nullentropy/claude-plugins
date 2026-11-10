@@ -12,6 +12,7 @@
 | `fedaykin` | Dispatches a unit to a cloud session or a local agent with a self-contained prompt |
 | `swordmaster` | Takes open PRs to green: conflicts, CI, every review thread answered and resolved |
 | `water` | Budgets a track against the weekly limit from the user's readings |
+| `spice` | Reports which units reached production, and the yield per percent of the weekly limit |
 
 Hooks:
 

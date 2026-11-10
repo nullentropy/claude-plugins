@@ -56,7 +56,8 @@ until the user says to resume, and then set it back to `RUNNING`.
 
 Quote the progress lines from `RESUME.md` after checking them against the
 repository, then one sentence: on track, blocked on what, or done. Add the
-ne:water estimate when the user asks about the limit.
+ne:water estimate when the user asks about the limit, and the ne:spice harvest
+when they ask what reached production.
 
 ## Pause
 
