@@ -42,21 +42,29 @@ GitHub steps are skipped.
 Only units in a ledger count. Work done outside a track does not. The script
 takes each unit's latest row with a head commit and finds where that work
 landed: the same commit, the merge commit of a pull request from the unit's
-branch, or commits with the same patches. Patches count only when all of the
-unit's commits arrived, or all of them squashed into one, so a unit built on
-another unit's branch does not count when only the other one ships. The unit
+branch, or commits with the same patches. A unit's own commits are the ones
+past where it meets the default branch and not under another unit's head, so
+a unit built on another unit's branch is matched on its own work. Patches
+count only when all of those commits arrived, or all of them squashed into
+one. The unit
 is harvested when that commit first crossed the line, and it is counted when
 that time is inside the window.
 
-A unit with more than 50 commits past where it meets the default branch was
-cut from another branch, so patch matching is skipped for it. Its work counts
+On a branch line, the time a commit crossed comes from the branch's reflog in
+this clone when the reflog reaches back that far, because a promotion by
+fast-forward leaves no commit to date it by. Otherwise it is the time of the
+commit that brought the work onto the branch.
+
+A unit with more than 50 commits of its own was cut from another branch, so
+patch matching is skipped for it. Its work counts
 only through its own commit or its pull request.
 
 ## Yield
 
 Yield is the units harvested per percent of the weekly limit spent in the same
 window. The script reads the rise from the `water.tsv` readings in the window
-of every track it reports. A reading lower than the one before means the limit
-reset, and the lower reading counts as spent from zero. With fewer than two
+of every track it reports. A reading more than 10 points below the highest so
+far means the limit reset, and it counts as spent from zero. A smaller fall is
+a correction or a rounding difference between tracks, and is ignored. With fewer than two
 readings in the window there is
 no figure. Ask for a reading through ne:water rather than guessing one.

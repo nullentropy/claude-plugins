@@ -36,7 +36,9 @@ PROD_BRANCHES = ("production", "prod", "release", "live")
 # A unit with more commits than this past the branch was cut from somewhere else,
 # and matching its patches would diff that branch's whole history.
 MAX_UNIT_COMMITS = 50
-RELEASE_TAGS = "release"
+RELEASE_TAGS = None
+# A smaller fall in the readings is a correction or rounding between tracks; a larger one is the weekly reset.
+RESET_DROP = 10.0
 
 
 def git(*args, ok=False):
@@ -140,7 +142,7 @@ class Line:
         return {
             "deploy": f"a successful GitHub deployment to {self.arg}",
             "branch": f"the branch {self.arg}",
-            "tag": "a release tag, named like v1.2 or 1.2" if self.arg == RELEASE_TAGS else f"a tag matching {self.arg}",
+            "tag": "a release tag, named like v1.2 or 1.2" if self.arg is RELEASE_TAGS else f"a tag matching {self.arg}",
             "merge": f"merge to {self.arg}",
         }[self.kind] + f" ({self.why})"
 
@@ -187,8 +189,8 @@ def deploy_succeeded(repo, dep_id):
 
 
 def tag_matches(name, glob):
-    if glob == RELEASE_TAGS:
-        return re.match(r"^v?\d+\.\d+", name) is not None
+    if glob is RELEASE_TAGS:
+        return re.fullmatch(r"v?\d+(\.\d+)+", name) is not None
     return fnmatch.fnmatch(name, glob)
 
 
@@ -231,7 +233,8 @@ def detect(tracks_read):
 
 def prepare(line):
     if line.kind in ("branch", "merge"):
-        line.ref = resolve(f"origin/{line.arg}") or resolve(line.arg)
+        line.refname = f"refs/remotes/origin/{line.arg}" if resolve(f"origin/{line.arg}") else f"refs/heads/{line.arg}"
+        line.ref = resolve(line.refname)
         if not line.ref:
             raise SystemExit(f"The harvest line {line.describe()} names a branch this clone does not have.")
     elif line.kind == "tag":
@@ -254,6 +257,11 @@ def crossed(line, commit):
     if line.kind in ("branch", "merge"):
         if not is_ancestor(commit, line.ref):
             return None
+        if line.kind == "branch":
+            # A promotion by fast-forward leaves no commit to date it by, so the ref's own history is the better clock.
+            moved = reflog(line.refname)
+            if moved and not is_ancestor(commit, moved[0][1]):
+                return next(t for t, sha in moved if is_ancestor(commit, sha))
         path = git("rev-list", "--first-parent", "--ancestry-path", "--reverse", f"{commit}..{line.ref}").split()
         # rev-list leaves commit itself out, so when commit is on the first-parent chain, path[0] is the commit after it.
         if not path or git("rev-parse", f"{path[0]}^1", ok=True) == commit:
@@ -269,9 +277,25 @@ def crossed(line, commit):
     return None
 
 
+_reflogs = {}
+
+
+def reflog(refname):
+    """(time, sha) for each position the ref has held in this clone, oldest first."""
+    if refname not in _reflogs:
+        rows = []
+        for row in (git("log", "-g", "--date=iso-strict", "--format=%H %gd", refname, ok=True) or "").splitlines():
+            sha, _, sel = row.partition(" ")
+            m = re.search(r"@\{(.+)\}", sel)
+            if m:
+                rows.append((parse_ts(m.group(1)), sha))
+        _reflogs[refname] = sorted(rows)
+    return _reflogs[refname]
+
+
 # Where a unit's work landed
 
-def landed(head, branch, targets):
+def landed(head, branch, targets, others):
     """Commits that carry the unit's work: the head itself, a pull request's merge commit, or the same patches."""
     yield head
     for sha in merged_prs().get(branch, ()):
@@ -280,10 +304,16 @@ def landed(head, branch, targets):
     made = commit_time(head)
     for target in targets:
         mb = git("merge-base", head, target.ref, ok=True)
-        if not mb or int(git("rev-list", "--count", f"{mb}..{head}")) > MAX_UNIT_COMMITS:
+        if not mb:
             continue
-        mine = {row[0] for row in pid_of(git("log", "-p", "--no-merges", f"{mb}..{head}", ok=True))}
-        whole = pid_of(git("diff", mb, head, ok=True))
+        # Commits under another unit's head belong to that unit, so a unit stacked on it is matched on its own work.
+        span = set(git("rev-list", f"{mb}..{head}").split())
+        below = [h for h in others if h != head and h in span]
+        own = git("rev-list", "--reverse", "--no-merges", head, "--not", mb, *below).split()
+        if not own or len(own) > MAX_UNIT_COMMITS:
+            continue
+        mine = {row[0] for row in pid_of(git("log", "-p", "--no-merges", head, "--not", mb, *below, ok=True))}
+        whole = pid_of(git("diff", f"{own[0]}^", head, ok=True))
         whole = whole[0][0] if whole else None
         found = {pid: (t, sha) for t, sha, pid in target.commits(made) if pid == whole or pid in mine}
         if whole in found:
@@ -332,12 +362,12 @@ class Target:
         return [c for c in self.all if c[0] >= since]
 
 
-def harvest_time(line, targets, r):
+def harvest_time(line, targets, r, others):
     head = resolve(r["head"].strip())
     if not head:
         return None, "head not in this clone"
     seen = set()
-    for c in landed(head, (r.get("branch") or "").strip(), targets):
+    for c in landed(head, (r.get("branch") or "").strip(), targets, others):
         if c in seen:
             continue
         seen.add(c)
@@ -348,9 +378,17 @@ def harvest_time(line, targets, r):
 
 
 def rise(rows, start):
-    """Percent spent across the readings; a fall means the weekly limit reset, so everything after it was spent from zero."""
+    """Percent spent across the readings. After a reset, the new reading was spent from zero."""
     rows = sorted((r for r in rows if r[0] >= start), key=lambda r: r[0])
-    return sum(b - a if b >= a else b for (_, a), (_, b) in zip(rows, rows[1:])), len(rows)
+    if not rows:
+        return 0.0, 0
+    spent, level = 0.0, rows[0][1]
+    for _, p in rows[1:]:
+        if p < level - RESET_DROP:
+            spent, level = spent + p, p
+        elif p > level:
+            spent, level = spent + p - level, p
+    return spent, len(rows)
 
 
 def report(only, days):
@@ -365,7 +403,8 @@ def report(only, days):
     print(f"Window: the last {days:g} days, since {start:%Y-%m-%d %H:%M} UTC.")
     all_units = {name: units(read) for name, read in tr.items()}
     heads = [resolve(r["head"].strip()) for us in all_units.values() for r in us.values()]
-    made = [commit_time(h) for h in heads if h]
+    others = {h for h in heads if h}
+    made = [commit_time(h) for h in others]
     targets = []
     if made:
         base = resolve(f"origin/{default_branch()}") or resolve(default_branch())
@@ -377,7 +416,7 @@ def report(only, days):
     for name, read in tr.items():
         got = []
         for unit, r in all_units[name].items():
-            t, problem = harvest_time(line, targets, r)
+            t, problem = harvest_time(line, targets, r, others)
             if problem:
                 missing += 1
             elif t is None:
