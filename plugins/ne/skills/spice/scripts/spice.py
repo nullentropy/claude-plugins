@@ -259,14 +259,14 @@ def crossed(line, commit):
             return None
         path = git("rev-list", "--first-parent", "--ancestry-path", "--reverse", f"{commit}..{line.ref}").split()
         # rev-list leaves commit itself out, so when commit is on the first-parent chain, path[0] is the commit after it.
-        if path and git("rev-parse", f"{path[0]}^1", ok=True) != commit:
-            return commit_time(path[0])
+        merged = commit_time(path[0] if path and git("rev-parse", f"{path[0]}^1", ok=True) != commit else commit)
         if line.kind == "branch":
-            # A fast-forward promotion leaves no commit to date it by; the clone's reflog says when it saw the move.
+            # A promotion by fast-forward, of the commit or of the merge that carries it, is dated only by when this
+            # clone saw the branch move, so the crossing is the later of the two.
             moved = reflog(line.refname)
             if moved and not is_ancestor(commit, moved[0][1]):
-                return next(t for t, sha in moved if is_ancestor(commit, sha))
-        return commit_time(commit)
+                return max(merged, next(t for t, sha in moved if is_ancestor(commit, sha)))
+        return merged
     if line.kind == "tag":
         containing = set((git("tag", "--contains", commit, ok=True) or "").split())
         return next((t for t, name in line.tags if name in containing), None)
@@ -307,14 +307,37 @@ def landed(head, branch, targets, others):
         if not mb:
             continue
         # Commits under another unit's head belong to that unit, so a unit stacked on it is matched on its own work.
-        span = set(git("rev-list", f"{mb}..{head}").split())
+        span = span_of(head, target)
         below = [h for h in others if h != head and h in span]
         # Stacked units may ship one at a time or squashed together, so try the unit's own commits and then the whole span.
-        for stop in ([mb, *below], [mb]) if below else ([mb],):
-            hit = patch_match(head, stop, target, made)
-            if hit:
-                yield hit
-                break
+        hit = (below and patch_match(head, [mb, *below], target, made)) or whole_match(head, target)
+        if not hit and len(span) <= MAX_UNIT_COMMITS:
+            # A unit squashed together with one stacked on it shipped in that unit's squash.
+            hit = next((h for h in (whole_match(a, target) for a in others if a != head and head in span_of(a, target)) if h), None)
+        if hit:
+            yield hit
+
+
+_spans = {}
+
+
+def span_of(head, target):
+    """The commits on head since it left the target branch."""
+    if (head, target.ref) not in _spans:
+        mb = git("merge-base", head, target.ref, ok=True)
+        _spans[(head, target.ref)] = set(git("rev-list", f"{mb}..{head}").split()) if mb else set()
+    return _spans[(head, target.ref)]
+
+
+_wholes = {}
+
+
+def whole_match(head, target):
+    """Where everything on head since it left the target branch landed, matched by patches."""
+    if (head, target.ref) not in _wholes:
+        mb = git("merge-base", head, target.ref, ok=True)
+        _wholes[(head, target.ref)] = mb and patch_match(head, [mb], target, commit_time(head))
+    return _wholes[(head, target.ref)]
 
 
 def patch_match(head, stop, target, made):

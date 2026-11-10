@@ -48,15 +48,18 @@ unit in any track, so a unit built on another unit's branch is matched on its
 own work. Patches count only when all of those commits arrived, or all of
 them squashed into one. If the unit's own commits do not match, the script
 tries again with the whole span, which counts a stacked unit squashed
-together with the one below it. The unit
+together with the one below it. A unit that still has no match counts when a
+unit stacked on it matched over its whole span, since that squash carries the
+lower unit's work too. The unit
 is harvested when that commit first crossed the line, and it is counted when
 that time is inside the window.
 
 The time a commit crossed is the time of the merge that brought it onto the
-line. When it arrived by fast-forward on a branch line, there is no merge to
-date it by, so the time comes from the branch's reflog in this clone if the
-reflog reaches back that far. That is when this clone saw the move, which can
-be later than when it happened.
+line. A branch line is often promoted by fast-forward, and that leaves no
+commit to date the promotion by, so on a branch line the time is the later of
+that merge and the first position in the branch's reflog that contains the
+commit, when the reflog reaches back that far. The reflog records when this
+clone saw the branch move, which can be later than when it happened.
 
 A unit with more than 50 commits of its own was cut from another branch, so
 patch matching is skipped for it. Its work counts
