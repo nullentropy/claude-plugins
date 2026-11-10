@@ -43,17 +43,20 @@ Only units in a ledger count. Work done outside a track does not. The script
 takes each unit's latest row with a head commit and finds where that work
 landed: the same commit, the merge commit of a pull request from the unit's
 branch, or commits with the same patches. A unit's own commits are the ones
-past where it meets the default branch and not under another unit's head, so
-a unit built on another unit's branch is matched on its own work. Patches
-count only when all of those commits arrived, or all of them squashed into
-one. The unit
+past where it meets the default branch and not under the head of another
+unit in any track, so a unit built on another unit's branch is matched on its
+own work. Patches count only when all of those commits arrived, or all of
+them squashed into one. If the unit's own commits do not match, the script
+tries again with the whole span, which counts a stacked unit squashed
+together with the one below it. The unit
 is harvested when that commit first crossed the line, and it is counted when
 that time is inside the window.
 
-On a branch line, the time a commit crossed comes from the branch's reflog in
-this clone when the reflog reaches back that far, because a promotion by
-fast-forward leaves no commit to date it by. Otherwise it is the time of the
-commit that brought the work onto the branch.
+The time a commit crossed is the time of the merge that brought it onto the
+line. When it arrived by fast-forward on a branch line, there is no merge to
+date it by, so the time comes from the branch's reflog in this clone if the
+reflog reaches back that far. That is when this clone saw the move, which can
+be later than when it happened.
 
 A unit with more than 50 commits of its own was cut from another branch, so
 patch matching is skipped for it. Its work counts

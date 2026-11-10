@@ -257,16 +257,16 @@ def crossed(line, commit):
     if line.kind in ("branch", "merge"):
         if not is_ancestor(commit, line.ref):
             return None
+        path = git("rev-list", "--first-parent", "--ancestry-path", "--reverse", f"{commit}..{line.ref}").split()
+        # rev-list leaves commit itself out, so when commit is on the first-parent chain, path[0] is the commit after it.
+        if path and git("rev-parse", f"{path[0]}^1", ok=True) != commit:
+            return commit_time(path[0])
         if line.kind == "branch":
-            # A promotion by fast-forward leaves no commit to date it by, so the ref's own history is the better clock.
+            # A fast-forward promotion leaves no commit to date it by; the clone's reflog says when it saw the move.
             moved = reflog(line.refname)
             if moved and not is_ancestor(commit, moved[0][1]):
                 return next(t for t, sha in moved if is_ancestor(commit, sha))
-        path = git("rev-list", "--first-parent", "--ancestry-path", "--reverse", f"{commit}..{line.ref}").split()
-        # rev-list leaves commit itself out, so when commit is on the first-parent chain, path[0] is the commit after it.
-        if not path or git("rev-parse", f"{path[0]}^1", ok=True) == commit:
-            return commit_time(commit)
-        return commit_time(path[0])
+        return commit_time(commit)
     if line.kind == "tag":
         containing = set((git("tag", "--contains", commit, ok=True) or "").split())
         return next((t for t, name in line.tags if name in containing), None)
@@ -289,7 +289,7 @@ def reflog(refname):
             m = re.search(r"@\{(.+)\}", sel)
             if m:
                 rows.append((parse_ts(m.group(1)), sha))
-        _reflogs[refname] = sorted(rows)
+        _reflogs[refname] = rows[::-1]
     return _reflogs[refname]
 
 
@@ -309,17 +309,27 @@ def landed(head, branch, targets, others):
         # Commits under another unit's head belong to that unit, so a unit stacked on it is matched on its own work.
         span = set(git("rev-list", f"{mb}..{head}").split())
         below = [h for h in others if h != head and h in span]
-        own = git("rev-list", "--reverse", "--no-merges", head, "--not", mb, *below).split()
-        if not own or len(own) > MAX_UNIT_COMMITS:
-            continue
-        mine = {row[0] for row in pid_of(git("log", "-p", "--no-merges", head, "--not", mb, *below, ok=True))}
-        whole = pid_of(git("diff", f"{own[0]}^", head, ok=True))
-        whole = whole[0][0] if whole else None
-        found = {pid: (t, sha) for t, sha, pid in target.commits(made) if pid == whole or pid in mine}
-        if whole in found:
-            yield found[whole][1]
-        elif mine and mine <= found.keys():
-            yield max(found[p] for p in mine)[1]
+        # Stacked units may ship one at a time or squashed together, so try the unit's own commits and then the whole span.
+        for stop in ([mb, *below], [mb]) if below else ([mb],):
+            hit = patch_match(head, stop, target, made)
+            if hit:
+                yield hit
+                break
+
+
+def patch_match(head, stop, target, made):
+    own = git("rev-list", "--reverse", "--no-merges", head, "--not", *stop).split()
+    if not own or len(own) > MAX_UNIT_COMMITS:
+        return None
+    mine = {row[0] for row in pid_of(git("log", "-p", "--no-merges", head, "--not", *stop, ok=True))}
+    whole = pid_of(git("diff", f"{own[0]}^", head, ok=True))
+    whole = whole[0][0] if whole else None
+    found = {pid: (t, sha) for t, sha, pid in target.commits(made) if pid == whole or pid in mine}
+    if whole in found:
+        return found[whole][1]
+    if mine and mine <= found.keys():
+        return max(found[p] for p in mine)[1]
+    return None
 
 
 _merged = None
@@ -402,9 +412,11 @@ def report(only, days):
     print(f"Harvest line: {line.describe()}.")
     print(f"Window: the last {days:g} days, since {start:%Y-%m-%d %H:%M} UTC.")
     all_units = {name: units(read) for name, read in tr.items()}
-    heads = [resolve(r["head"].strip()) for us in all_units.values() for r in us.values()]
-    others = {h for h in heads if h}
-    made = [commit_time(h) for h in others]
+    heads = {resolve(r["head"].strip()) for us in all_units.values() for r in us.values()} - {None}
+    made = [commit_time(h) for h in heads]
+    # A unit can be stacked on one from another track, so every track's heads mark where units begin.
+    every = tracks(None) if only else tr
+    others = {resolve(r["head"].strip()) for read in every.values() for r in units(read).values()} - {None}
     targets = []
     if made:
         base = resolve(f"origin/{default_branch()}") or resolve(default_branch())
