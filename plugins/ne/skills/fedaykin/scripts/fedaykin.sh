@@ -1,16 +1,32 @@
 #!/usr/bin/env bash
-# fedaykin.sh prompt TRACK UNIT   print the prompt that runs UNIT, after checking it may run
+# fedaykin.sh prompt TRACK UNIT              print the prompt that runs UNIT, after checking it may run
+# fedaykin.sh routine TRACK UNIT ENV [MODEL]  print the RemoteTrigger create body that runs it in the cloud
 # Refuses when the track is paused or the brief is missing or not yet pushed.
 # Run it from inside the code repository.
 set -euo pipefail
 . "$(dirname "$0")/../../../lib/state.sh"
 
-[ "${1:-}" = prompt ] && [ -n "${2:-}" ] && [ -n "${3:-}" ] || {
-  sed -n '2,4p' "$0" | sed 's/^# //' >&2
-  exit 1
-}
-track=$2
-unit=$3
+usage() { sed -n '2,5p' "$0" | sed 's/^# //' >&2; exit 1; }
+cmd=${1:-}
+track=${2:-}
+unit=${3:-}
+[ -n "$track" ] && [ -n "$unit" ] || usage
+case "$cmd" in
+  prompt) ;;
+  routine)
+    env=${4:-}
+    model=${5:-claude-opus-5-5}
+    [ -n "$env" ] || usage
+    # Read the URL as configured: get-url applies insteadOf rewrites.
+    url=$(git config --get remote.origin.url) || { echo "No origin remote. A cloud worker clones from GitHub." >&2; exit 1; }
+    case "$url" in
+      git@github.com:*) url="https://github.com/${url#git@github.com:}" ;;
+      ssh://git@github.com/*) url="https://github.com/${url#ssh://git@github.com/}" ;;
+    esac
+    url=${url%.git}
+    ;;
+  *) usage ;;
+esac
 sietch="$(dirname "$0")/../../sietch/scripts/sietch.sh"
 p=$("$sietch" open "$track")
 
@@ -31,7 +47,8 @@ if git -C "$p" remote get-url origin >/dev/null 2>&1; then
   fi
 fi
 
-cat <<EOF
+prompt_text() {
+  cat <<EOF
 You are fedaykin unit $unit for the track $track, working in this repository.
 Nobody can answer questions during this run. Your final message is your
 report.
@@ -63,3 +80,31 @@ the tests and commands you ran with their results, open questions, and every
 place you departed from the brief and why. Do not claim anything you did not
 check.
 EOF
+}
+prompt=$(prompt_text)
+
+if [ "$cmd" = prompt ]; then
+  printf '%s\n' "$prompt"
+  exit 0
+fi
+
+# The next whole minute, so the routine fires as soon as it is created.
+at=$(date -u -v+1M +%Y-%m-%dT%H:%M:00Z 2>/dev/null || date -u -d '+1 minute' +%Y-%m-%dT%H:%M:00Z)
+jq -n --arg name "$track: $unit" --arg at "$at" --arg env "$env" --arg model "$model" \
+  --arg url "$url" --arg prompt "$prompt" --arg uuid "$(uuidgen | tr '[:upper:]' '[:lower:]')" '{
+  name: $name,
+  enabled: true,
+  run_once_at: $at,
+  job_config: {ccr: {
+    environment_id: $env,
+    session_context: {
+      model: $model,
+      sources: [{git_repository: {url: $url}}],
+      allowed_tools: ["Bash", "Read", "Write", "Edit", "Glob", "Grep"]
+    },
+    events: [{data: {
+      type: "user", uuid: $uuid, session_id: "", parent_tool_use_id: null,
+      message: {role: "user", content: $prompt}
+    }}]
+  }}
+}'

@@ -9,7 +9,7 @@
 | `voice` | How docs, PRs, commits, comments, tickets and pages are written |
 | `sietch` | A track's shared record on the branch `sietch/<name>`: job, orders, progress, next steps |
 | `navigator` | Proposes the next units of work and writes their briefs |
-| `fedaykin` | Dispatches a unit to a cloud session or a local agent with a self-contained prompt |
+| `fedaykin` | Dispatches a unit to a one-time cloud routine or a local agent with a self-contained prompt |
 | `swordmaster` | Takes open PRs to green: conflicts, CI, every review thread answered and resolved |
 | `water` | Budgets a track against the weekly limit, from the status line or the user's readings |
 | `spice` | Reports which units reached production, and the yield per percent of the weekly limit |

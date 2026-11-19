@@ -25,20 +25,32 @@ needs no plugin, no memory and no one to ask.
 
 ## Dispatch
 
-Get the prompt with `scripts/fedaykin.sh prompt <track> <unit>`, run from
-inside the code repository. It refuses if the track is paused or the brief is
-not pushed. Do not dispatch around a refusal.
+Run `scripts/fedaykin.sh` from inside the code repository. It refuses if the
+track is paused or the brief is not pushed. Do not dispatch around a refusal.
 
-- **Cloud, the default.** Push the base the brief names first, because the
-  cloud session clones from GitHub. Then run
-  `claude --cloud "$(scripts/fedaykin.sh prompt <track> <unit>)"` and record
-  the session ID or link it prints.
+- **Cloud, the default.** Run it as a one-time cloud routine. `claude --cloud`
+  does not work here: it refuses to start without an interactive terminal.
+  The Agent tool's `isolation: "remote"` does not either: it has run workers
+  in a worktree on the laptop.
+  1. Push the base the brief names, because the cloud session clones from
+     GitHub.
+  2. Find the cloud environment ID (`env_...`). Take it from the track's last
+     routine (`RemoteTrigger get` on the trigger ID in the ledger), or from
+     another routine on the same repository (`RemoteTrigger list`). If there
+     is none, ask the user which environment to use.
+  3. Build the body with
+     `scripts/fedaykin.sh routine <track> <unit> <env_id> [model]` and pass it
+     to `RemoteTrigger` with `action: "create"`. It fires at the next whole
+     minute. The model defaults to claude-opus-5-5; pass claude-sonnet-5-5 for
+     work that follows an existing pattern.
+  4. Record the trigger ID it returns. `RemoteTrigger list_runs` with that ID
+     gives the session, and `get_run_log` shows what the worker is doing.
 - **Local,** when the user asks for it or the work needs this machine. Use the
-  Agent tool in the background with worktree isolation and the same prompt.
-  Use Sonnet for work that follows an existing pattern and the default model
-  for hard design.
+  Agent tool in the background with worktree isolation and the output of
+  `scripts/fedaykin.sh prompt <track> <unit>`. Use Sonnet for work that
+  follows an existing pattern and the default model for hard design.
 
-Append a ledger row: `dispatched`, the branch, and the session ID or agent
+Append a ledger row: `dispatched`, the branch, and the trigger ID or agent
 name as evidence. Save the sietch.
 
 ## When a unit reports
