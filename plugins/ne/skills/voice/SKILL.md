@@ -1,6 +1,6 @@
 ---
 name: voice
-description: The voice for anything written down that is not a chat reply: docs, PR titles and descriptions, commit messages, code comments, tickets, Slack messages, and shareable pages. Use when writing or editing any of those, and when asked to unslop, deslop, tighten, shorten or rewrite text.
+description: "The voice for anything written down that is not a chat reply: docs, PR titles and descriptions, commit messages, code comments, tickets, Slack messages, and shareable pages. Use when writing or editing any of those, and when asked to unslop, deslop, tighten, shorten or rewrite text."
 ---
 
 # Voice
